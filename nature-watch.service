@@ -1,0 +1,14 @@
+[Unit]
+Description=Nature Watch wildlife monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 -m src.main
+WorkingDirectory=/home/pi/nature-watch
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=/home/pi/nature-watch/.env
+
+[Install]
+WantedBy=multi-user.target

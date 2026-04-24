@@ -1,0 +1,27 @@
+# Camera
+camera_index: 0
+
+# Motion detection
+motion_threshold: 500       # minimum contour area (px²) to count as motion
+motion_blur_ksize: 21       # Gaussian blur kernel size (must be odd)
+
+# Recording
+clip_duration_s: 20         # length of each recorded clip
+clip_cooldown_s: 10         # seconds to wait after a clip ends before re-triggering
+
+# Rate limiting
+clips_per_hour_cap: 100
+
+# Local buffer (used when offline)
+local_buffer_dir: ./buffer
+
+# AWS / S3
+s3_bucket: "nature-watch"               # required — set via NW_S3_BUCKET env var or here
+s3_prefix: wildlife
+aws_region: us-east-1
+
+# SNS (TODO: wire up for rate-cap alerts)
+# sns_topic_arn: ""
+
+# Health check
+health_port: 8080
