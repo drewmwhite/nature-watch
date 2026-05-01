@@ -6,6 +6,21 @@ import yaml
 
 _ENV_PREFIX = "NW_"
 
+
+def _load_dotenv(path: Path) -> None:
+    if not path.exists():
+        return
+    with path.open() as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip()
+            if key and key not in os.environ:
+                os.environ[key] = value
+
 _DEFAULTS = {
     "camera_index": 0,
     "motion_threshold": 500,
@@ -31,6 +46,7 @@ def load(path: str | None = None) -> dict:
     cfg = dict(_DEFAULTS)
 
     config_path = Path(path) if path else Path(__file__).parent.parent / "config.yaml"
+    _load_dotenv(config_path.parent / ".env")
     if config_path.exists():
         with config_path.open() as f:
             file_cfg = yaml.safe_load(f) or {}

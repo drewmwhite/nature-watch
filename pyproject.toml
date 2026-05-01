@@ -14,6 +14,7 @@ dependencies = [
 
 [project.scripts]
 nature-watch = "src.main:main"
+nature-watch-snap = "src.snap:snap"
 
 [tool.setuptools.packages.find]
 where = ["."]
