@@ -7,8 +7,9 @@ import tempfile
 import threading
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from typing import Callable, Optional
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
@@ -29,7 +30,13 @@ COLS = 5
 CARD_COLS = 4
 META_FILE = "viewer_meta.json"
 _TS_RE = re.compile(r"^(\d{8}_\d{6})")
+_CENTRAL = ZoneInfo("America/Chicago")
 _THUMB_WORKERS = 6  # keep well under boto3's default pool of 10
+
+
+def _utc_to_central(dt: datetime) -> datetime:
+    """Convert a naive UTC datetime to an aware Central Time datetime."""
+    return dt.replace(tzinfo=timezone.utc).astimezone(_CENTRAL)
 
 
 def _parse_ts(key: str) -> datetime:
@@ -411,7 +418,10 @@ class ViewerApp(tk.Tk):
         by_date: dict = defaultdict(list)
         for k in keys:
             ts = _parse_ts(k)
-            date_str = ts.strftime("%Y-%m-%d") if ts != datetime.min else "unknown"
+            if ts == datetime.min:
+                date_str = "unknown"
+            else:
+                date_str = _utc_to_central(ts).strftime("%Y-%m-%d")
             by_date[date_str].append(k)
         # Cache each date's key list so clicking into a date is free
         for date, date_keys in by_date.items():
@@ -453,7 +463,7 @@ class ViewerApp(tk.Tk):
         cards = []
         for p in sorted(prefixes, reverse=True):
             date = p.rstrip("/").rsplit("/", 1)[-1]
-            cards.append((date, "", lambda p=p, d=date: self._show_clip_hours(p, d)))
+            cards.append((date, "UTC date", lambda p=p, d=date: self._show_clip_hours(p, d)))
         if not cards:
             self._status_var.set("No clips found")
         self._render_cards(cards)
@@ -475,8 +485,14 @@ class ViewerApp(tk.Tk):
         cards = []
         for p in sorted(prefixes):
             hour = p.rstrip("/").rsplit("/", 1)[-1]
+            try:
+                utc_dt = datetime.strptime(f"{date_label} {hour}", "%Y-%m-%d %H")
+                ct_dt = _utc_to_central(utc_dt)
+                ct_label = ct_dt.strftime("%H:%M %Z")  # e.g. "09:00 CDT"
+            except ValueError:
+                ct_label = f"{hour}:00"
             cards.append((
-                f"{hour}:00", "",
+                ct_label, "",
                 lambda p=p, dp=date_prefix, dl=date_label, h=hour:
                     self._show_clip_hour(p, dp, dl, h),
             ))
