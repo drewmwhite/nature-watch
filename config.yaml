@@ -10,7 +10,7 @@ clip_duration_s: 20         # length of each recorded clip
 clip_cooldown_s: 10         # seconds to wait after a clip ends before re-triggering
 
 # Rate limiting
-clips_per_hour_cap: 100
+clips_per_hour_cap: 30
 
 # Local buffer (used when offline)
 local_buffer_dir: ./buffer
