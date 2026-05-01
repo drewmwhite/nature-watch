@@ -1,0 +1,4 @@
+tmux new -s myapp
+python app.py
+# Then press Ctrl+B, then D to detach
+# Reattach later with: tmux attach -t myapp

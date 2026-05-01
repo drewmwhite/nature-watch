@@ -10,11 +10,13 @@ dependencies = [
     "opencv-python-headless>=4.9",
     "boto3>=1.34",
     "PyYAML>=6.0",
+    "Pillow>=10.0",
 ]
 
 [project.scripts]
 nature-watch = "src.main:main"
 nature-watch-snap = "src.snap:snap"
+nature-watch-viewer = "src.viewer:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

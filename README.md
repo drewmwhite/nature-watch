@@ -41,7 +41,7 @@ AWS_SECRET_ACCESS_KEY=...
 All settings live in `config.yaml`. Every value can be overridden with an `NW_` environment variable (e.g. `NW_CAMERA_INDEX=1`).
 
 | Setting | Default | Description |
-|---|---|---|
+| --- | --- | --- |
 | `camera_index` | `0` | cv2 device index (`0` = first camera) |
 | `motion_threshold` | `500` | Minimum contour area (px²) to count as motion |
 | `motion_blur_ksize` | `21` | Gaussian blur kernel size (must be odd) |
@@ -61,6 +61,37 @@ python -m src.main
 ```
 
 The app logs to stdout. Stop with `Ctrl-C` or `SIGTERM`.
+
+## Snapshot viewer
+
+A tkinter camera-roll GUI lets you browse snapshots and motion clips stored in S3, mark favorites, and organise media into albums.
+
+**Prerequisites** (first time only):
+
+```bash
+sudo apt-get install python3.13-tk   # or python3-tk if using system Python
+pip install Pillow
+```
+
+**Launch:**
+
+```bash
+python -m src.viewer
+```
+
+The viewer loads all media from S3 and displays a scrollable thumbnail grid. Click any thumbnail to open a full-size view.
+
+| Action | How |
+| --- | --- |
+| Navigate photos | Click a thumbnail, then use **← Prev** / **Next →** buttons |
+| Favourite a photo | Click **☆ Favorite** in the detail view — persisted to `viewer_meta.json` |
+| Add to album | Click **+ Add to Album** and type a name |
+| Filter by favourites | Click **★ Favorites** in the toolbar |
+| Browse an album | Click **Albums ▾** and select from the menu |
+| Return to all media | Click **All Media** in the toolbar |
+| Play a video clip | Click an MP4 thumbnail — opens in the system video player |
+
+Albums and favourites are stored locally in `viewer_meta.json` (next to `config.yaml`) and persist between sessions.
 
 **Laptop test** — no changes needed; the integrated camera is typically index `0`.
 
