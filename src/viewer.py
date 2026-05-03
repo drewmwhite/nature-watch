@@ -31,7 +31,8 @@ CARD_COLS = 4
 META_FILE = "viewer_meta.json"
 _TS_RE = re.compile(r"^(\d{8}_\d{6})")
 _CENTRAL = ZoneInfo("America/Chicago")
-_THUMB_WORKERS = 6  # keep well under boto3's default pool of 10
+_THUMB_WORKERS = 6   # keep well under boto3's default pool of 10
+_DL_WARN_MB = 50     # warn user when session downloads cross this threshold
 
 
 def _utc_to_central(dt: datetime) -> datetime:
@@ -111,6 +112,7 @@ class S3Loader:
         self._s3 = boto3.client("s3", region_name=region)
         self._bucket = bucket
         self.prefix_video = prefix_video
+        self.bytes_downloaded: int = 0
 
     def list_prefixes(self, prefix: str) -> list:
         """One (or a few) S3 calls: returns immediate virtual sub-folders under prefix."""
@@ -129,7 +131,9 @@ class S3Loader:
         return sorted(keys, key=_parse_ts, reverse=True)
 
     def download_bytes(self, key: str) -> bytes:
-        return self._s3.get_object(Bucket=self._bucket, Key=key)["Body"].read()
+        data = self._s3.get_object(Bucket=self._bucket, Key=key)["Body"].read()
+        self.bytes_downloaded += len(data)
+        return data
 
     def download_to_tempfile(self, key: str) -> str:
         data = self.download_bytes(key)
@@ -312,6 +316,10 @@ class ViewerApp(tk.Tk):
         self._photo_refs: dict = {}
         # Breadcrumb: list of (label, callable) — callable re-renders that level
         self._breadcrumb: list = []
+        # Viewport-aware thumbnail loading
+        self._thumb_cells: list = []  # [(key, label), ...] for current grid
+        # Download safeguards
+        self._dl_warned = False
 
         self._build_ui()
         self._show_home()
@@ -328,6 +336,8 @@ class ViewerApp(tk.Tk):
 
         self._status_var = tk.StringVar(value="")
         ttk.Label(toolbar, textvariable=self._status_var).pack(side=tk.RIGHT, padx=8)
+        self._dl_var = tk.StringVar(value="")
+        ttk.Label(toolbar, textvariable=self._dl_var, foreground="#a0aec0").pack(side=tk.RIGHT, padx=4)
 
         self._crumb_frame = tk.Frame(self, bg="#1e1e1e", padx=8, pady=3)
         self._crumb_frame.pack(side=tk.TOP, fill=tk.X)
@@ -336,7 +346,7 @@ class ViewerApp(tk.Tk):
         outer.pack(fill=tk.BOTH, expand=True)
 
         self._canvas = tk.Canvas(outer, bg="#1e1e1e", highlightthickness=0)
-        vbar = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=self._canvas.yview)
+        vbar = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=self._scrolled)
         self._canvas.configure(yscrollcommand=vbar.set)
         vbar.pack(side=tk.RIGHT, fill=tk.Y)
         self._canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -370,14 +380,21 @@ class ViewerApp(tk.Tk):
             if not is_last:
                 lbl.bind("<Button-1>", lambda e, f=fn: f())
 
+    def _scrolled(self, *args) -> None:
+        """Scrollbar command wrapper — scroll then check for newly visible thumbnails."""
+        self._canvas.yview(*args)
+        self._request_visible_thumbs()
+
     def _clear_content(self) -> None:
         for w in self._grid_frame.winfo_children():
             w.destroy()
         self._photo_refs.clear()
+        self._thumb_cells.clear()
         self._canvas.yview_moveto(0)
 
     def _on_grid_configure(self, event) -> None:
         self._canvas.configure(scrollregion=self._canvas.bbox("all"))
+        self._request_visible_thumbs()
 
     def _on_canvas_configure(self, event) -> None:
         self._canvas.itemconfig(self._canvas_window_id, width=event.width)
@@ -389,6 +406,7 @@ class ViewerApp(tk.Tk):
             self._canvas.yview_scroll(1, "units")
         else:
             self._canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        self._request_visible_thumbs()
 
     # ── Navigation ───────────────────────────────────────────────────────────
 
@@ -609,13 +627,41 @@ class ViewerApp(tk.Tk):
                 widget.bind("<Enter>", lambda e, f=cell: f.configure(bg="#3a3a3a"))
                 widget.bind("<Leave>", lambda e, f=cell: f.configure(bg="#2a2a2a"))
 
+            # Register cell for viewport-aware loading — no download yet
+            self._thumb_cells.append((key, thumb_label))
+
+    def _request_visible_thumbs(self) -> None:
+        """Request thumbnail downloads only for cells currently in the viewport."""
+        if not self._thumb_cells:
+            return
+        bbox = self._canvas.bbox("all")
+        if not bbox:
+            return
+
+        total_h = max(bbox[3], 1)
+        top_frac, bot_frac = self._canvas.yview()
+        visible_top = top_frac * total_h
+        visible_bot = bot_frac * total_h
+
+        cell_h = THUMB_H + THUMB_PAD * 2 + 20
+        row_h = cell_h + THUMB_PAD // 2
+        buffer_rows = 1  # load one row above/below viewport edge
+
+        first_row = max(0, int(visible_top / row_h) - buffer_rows)
+        last_row = int(visible_bot / row_h) + buffer_rows
+
+        for idx, (key, label) in enumerate(self._thumb_cells):
+            if idx // COLS < first_row or idx // COLS > last_row:
+                continue
+            if key in self._photo_refs:
+                continue  # already displayed
             cached = self._cache.get(key)
             if cached:
-                self._apply_thumb(thumb_label, key, cached)
+                self._apply_thumb(label, key, cached)
             else:
                 self._cache.request(
                     key,
-                    lambda k, img, lbl=thumb_label:
+                    lambda k, img, lbl=label:
                         self.after(0, self._apply_thumb, lbl, k, img)
                 )
 
@@ -623,6 +669,23 @@ class ViewerApp(tk.Tk):
         photo = ImageTk.PhotoImage(img)
         self._photo_refs[key] = photo
         label.configure(image=photo, width=THUMB_W, height=THUMB_H)
+        self._update_dl_display()
+
+    def _update_dl_display(self) -> None:
+        total = self._loader.bytes_downloaded
+        if total < 1024 * 1024:
+            self._dl_var.set(f"↓ {total / 1024:.0f} KB")
+        else:
+            mb = total / (1024 * 1024)
+            self._dl_var.set(f"↓ {mb:.1f} MB")
+            if not self._dl_warned and mb >= _DL_WARN_MB:
+                self._dl_warned = True
+                messagebox.showwarning(
+                    "Download Budget",
+                    f"You've downloaded {mb:.0f} MB this session.\n\n"
+                    f"S3 data transfer is free up to 100 GB/month, "
+                    f"then $0.09/GB.",
+                )
 
     # ── Detail / playback ────────────────────────────────────────────────────
 
@@ -640,6 +703,7 @@ class ViewerApp(tk.Tk):
                 tmp_path = self._loader.download_to_tempfile(key)
                 subprocess.Popen(["xdg-open", tmp_path])
                 self.after(0, self._status_var.set, "")
+                self.after(0, self._update_dl_display)
             except Exception as exc:
                 self.after(0, messagebox.showerror, "Video Error", str(exc))
 

@@ -10,7 +10,7 @@ Runs on a Raspberry Pi 4 with a USB webcam, or on any laptop using the integrate
 2. Detects motion using OpenCV frame differencing
 3. Records a 20-second MP4 clip when motion is detected
 4. Uploads the clip to S3 under a `YYYY-MM-DD/HH/` partition
-5. Enforces a hard cap of 100 clips/hour to prevent S3 flooding
+5. Enforces a hard cap of 30 clips/hour to prevent S3 flooding
 6. Buffers clips to disk when offline and retries automatically on reconnect
 
 ## Requirements
@@ -47,7 +47,7 @@ All settings live in `config.yaml`. Every value can be overridden with an `NW_` 
 | `motion_blur_ksize` | `21` | Gaussian blur kernel size (must be odd) |
 | `clip_duration_s` | `20` | Length of each recorded clip in seconds |
 | `clip_cooldown_s` | `10` | Seconds to wait after a clip ends before re-triggering |
-| `clips_per_hour_cap` | `100` | Hard rate limit per hour |
+| `clips_per_hour_cap` | `30` | Hard rate limit per hour |
 | `local_buffer_dir` | `./buffer` | Local spool directory for offline buffering |
 | `s3_bucket` | — | **Required.** S3 bucket name |
 | `s3_prefix` | `wildlife` | Top-level prefix inside the bucket |
@@ -62,46 +62,82 @@ python -m src.main
 
 The app logs to stdout. Stop with `Ctrl-C` or `SIGTERM`.
 
+**Laptop test** — no changes needed; the integrated camera is typically index `0`.
+
+**USB webcam on Pi** — also typically index `0`. If you have a second device attached, set `camera_index: 1` in `config.yaml`.
+
 ## Snapshot viewer
 
-A tkinter camera-roll GUI lets you browse snapshots and motion clips stored in S3, mark favorites, and organise media into albums.
+A tkinter GUI for browsing snapshots and motion clips stored in S3. Media is organised by the same partition structure used in S3 — you click into a date, then an hour, then see thumbnails for that window. Favorites and albums are also supported.
 
-**Prerequisites** (first time only):
+### Prerequisites (first time only)
 
 ```bash
 sudo apt-get install python3.13-tk   # or python3-tk if using system Python
 pip install Pillow
 ```
 
-**Launch:**
+### Launch
 
 ```bash
 python -m src.viewer
 ```
 
-The viewer loads all media from S3 and displays a scrollable thumbnail grid. Click any thumbnail to open a full-size view.
+### Navigation
+
+The viewer mirrors the S3 folder hierarchy. No media is downloaded until you reach a leaf partition.
+
+```
+Home
+├── Snapshots
+│   ├── 2026-04-24          ← Central Time date, grouped client-side
+│   └── 2026-04-23
+└── Wildlife Clips
+    ├── 2026-04-24 (UTC)    ← S3 partition date (UTC)
+    │   ├── 09:00 CDT       ← hour converted to Central Time
+    │   └── 14:00 CDT
+    └── 2026-04-23 (UTC)
+```
+
+A breadcrumb bar at the top shows your current path and lets you jump back to any level.
+
+### Actions
 
 | Action | How |
 | --- | --- |
-| Navigate photos | Click a thumbnail, then use **← Prev** / **Next →** buttons |
-| Favourite a photo | Click **☆ Favorite** in the detail view — persisted to `viewer_meta.json` |
-| Add to album | Click **+ Add to Album** and type a name |
-| Filter by favourites | Click **★ Favorites** in the toolbar |
-| Browse an album | Click **Albums ▾** and select from the menu |
-| Return to all media | Click **All Media** in the toolbar |
-| Play a video clip | Click an MP4 thumbnail — opens in the system video player |
+| Browse by date | Click **Snapshots** or **Wildlife Clips**, then click a date card |
+| Browse by hour (clips) | Click a date card, then click an hour card |
+| Open a photo full-size | Click any thumbnail |
+| Navigate between photos | Use **← Prev** / **Next →** in the detail window |
+| Play a video clip | Click an MP4 thumbnail — downloads and opens in the system video player |
+| Favourite a photo | Click **☆ Favorite** in the detail window |
+| Filter to favourites | Click **★ Favorites** in the toolbar |
+| Add to album | Click **+ Add to Album** in the detail window and type a name |
+| Browse an album | Click **Albums ▾** in the toolbar and select from the menu |
+| Return home | Click **⌂ Home** in the toolbar |
 
-Albums and favourites are stored locally in `viewer_meta.json` (next to `config.yaml`) and persist between sessions.
+Favorites and albums are stored locally in `viewer_meta.json` (next to `config.yaml`) and persist between sessions. All times are displayed in **Central Time**.
 
-**Laptop test** — no changes needed; the integrated camera is typically index `0`.
+### S3 cost controls
 
-**USB webcam on Pi** — also typically index `0`. If you have a second device attached, set `camera_index: 1` in `config.yaml`.
+The viewer is designed to minimise S3 data transfer:
+
+- **Partition navigation** makes only lightweight LIST calls — no media is downloaded until you reach a thumbnail grid.
+- **Viewport-aware loading** downloads thumbnails only for cells visible in the current scroll window (~10 at a time). Scrolling loads the next batch; scrolling back is free (cached in memory).
+- **Session download counter** in the toolbar shows `↓ X.X MB` in real time.
+- **50 MB warning** — a one-time dialog appears if a session exceeds 50 MB, noting the S3 free tier and per-GB cost.
+
+See [`docs/cost-analysis.md`](docs/cost-analysis.md) for a full cost breakdown.
+
+---
 
 ## S3 folder structure
 
 ```
-s3://your-bucket/wildlife/2026-04-23/14/20260423_143201_a1b2c3d4.mp4
-                 ↑prefix   ↑date      ↑hour ↑timestamp + short UUID
+s3://your-bucket/
+├── snapshots/20260423_143201_a1b2c3d4.jpg      ← on-demand snapshots (UTC timestamp)
+└── wildlife/2026-04-23/14/                      ← motion clips partitioned by UTC date/hour
+        20260423_143201_a1b2c3d4.mp4
 ```
 
 ## Health check
@@ -123,7 +159,7 @@ curl localhost:8080/status
   "uptime_s": 3600,
   "camera_ok": true,
   "clips_this_hour": 12,
-  "clips_per_hour_cap": 100,
+  "clips_per_hour_cap": 30,
   "last_clip_utc": "2026-04-23T14:32:01Z",
   "upload_queue_depth": 0,
   "last_upload_utc": "2026-04-23T14:32:05Z"
@@ -152,6 +188,8 @@ When the Pi loses internet connectivity, clips are saved to `buffer/` and their 
 
 ## Rate limiting
 
-When the 100 clips/hour cap is reached, further motion events are dropped and a warning is logged. The cap resets automatically at the start of each new hour.
+When the 30 clips/hour cap is reached, further motion events are dropped and a warning is logged. The cap resets automatically at the start of each new hour.
+
+With `clip_duration_s: 20` and `clip_cooldown_s: 10`, each clip cycle takes 30 seconds, giving a hardware maximum of 120 clips/hour. The cap of 30 means sustained motion activity fills the quota in 15 minutes.
 
 > **TODO:** Wire up an AWS SNS alert when the cap is hit. The stub is in `src/rate_limiter.py`; set `sns_topic_arn` in `config.yaml` once you have a topic ARN.
